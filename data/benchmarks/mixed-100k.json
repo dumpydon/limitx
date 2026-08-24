@@ -1,0 +1,19 @@
+{
+  "cancels": 22188,
+  "elapsed_seconds": 0.5852289583333333,
+  "max_ns": 41508125,
+  "modifies": 12022,
+  "operations": 100000,
+  "p50_ns": 4333,
+  "p95_ns": 14500,
+  "p99_ns": 23625,
+  "platform": "macOS-15.7.8-arm64-arm-64bit-Mach-O",
+  "processor": "arm",
+  "python_version": "3.14.3",
+  "runs": 3,
+  "scenario": "mixed",
+  "seed": 42,
+  "throughput_ops_per_second": 170873.2942484405,
+  "trades": 17327,
+  "warmup_operations": 5000
+}

@@ -1,0 +1,10 @@
+import { Panel } from "./Panel";
+
+export function EngineView({ system }: { system: Record<string, number | string | null> }) {
+  return <div className="view-stack">
+    <div className="engine-principles"><div><span>01</span><strong>Fixed-point prices</strong><p>Matching compares integer ticks. Binary float equality never decides a cross.</p></div><div><span>02</span><strong>Price → FIFO</strong><p>Sorted price levels own intrusive doubly linked queues.</p></div><div><span>03</span><strong>Single writer</strong><p>One bounded command queue serializes mutation per symbol.</p></div><div><span>04</span><strong>Event sourced</strong><p>Sequenced commands rebuild state and verify with checksums.</p></div></div>
+    <div className="split-grid"><Panel title="Selected Price Level" eyebrow="DATA STRUCTURE INSPECTOR"><div className="linked-list"><div className="lookup">order_id <b>→</b> node</div><div className="list-label">HEAD</div><div className="order-node"><span>Order 812</span><i>prev</i><i>next</i></div><b className="link">↕</b><div className="order-node active"><span>Order 819</span><i>prev</i><i>next</i></div><b className="link">↕</b><div className="order-node"><span>Order 831</span><i>prev</i><i>next</i></div><div className="list-label tail">TAIL</div></div></Panel><Panel title="System Inspector" eyebrow="LIVE ENGINE STATE"><dl className="inspector-list">{Object.entries(system).filter(([, value]) => typeof value !== "object").map(([key,value]) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd className="mono">{String(value ?? "—")}</dd></div>)}</dl></Panel></div>
+    <Panel title="Mutation Pipeline" eyebrow="CONCURRENCY BOUNDARIES"><div className="pipeline"><div><b>Gateway</b><span>validation + risk</span></div><i>→</i><div><b>Symbol queue</b><span>bounded ingress</span></div><i>→</i><div className="focus"><b>Matcher</b><span>single writer</span></div><i>→</i><div><b>Events</b><span>journal + projection</span></div><i>→</i><div><b>WebSocket</b><span>bounded clients</span></div></div></Panel>
+  </div>;
+}
+

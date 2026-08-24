@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "limitx"
+version = "0.1.0"
+description = "Deterministic exchange matching engine and market-microstructure laboratory"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.9,<3",
+  "sortedcontainers>=2.4,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27,<1",
+  "hypothesis>=6.112,<7",
+  "mypy>=1.11,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+  "ruff>=0.6,<1",
+  "sortedcontainers-stubs>=2.4,<3",
+]
+
+[project.scripts]
+limitx-bench = "limitx.benchmarks.runner:main"
+limitx-audit = "limitx.replay.audit:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["limitx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["limitx"]
+plugins = ["pydantic.mypy"]
+exclude = ["tests"]
