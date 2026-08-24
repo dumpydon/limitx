@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from limitx.ai.analyst import ReplayAnalyst
+from limitx.analytics.experiments import compare_scenarios
+from limitx.analytics.explain import explain_order
 from limitx.analytics.exports import export_artifacts
 from limitx.analytics.microstructure import calculate_metrics
 from limitx.api.schemas import (
@@ -18,19 +22,27 @@ from limitx.api.schemas import (
     BenchmarkRequest,
     ModifyRequest,
     OrderRequest,
+    RiskConfigRequest,
+    ScenarioCompareRequest,
     SimulationRequest,
 )
 from limitx.benchmarks.runner import run_benchmark
 from limitx.domain.commands import CancelOrder, ModifyOrder, NewOrder
+from limitx.domain.enums import EventType, Side
+from limitx.domain.instruments import INSTRUMENTS
 from limitx.domain.order import Order
 from limitx.engine.gateway import EngineGateway
+from limitx.replay.recovery import RecoveryPoint, create_recovery_point, recover
 from limitx.replay.replay import ReplaySession
+from limitx.risk.gateway import RiskLimits
 from limitx.simulation.engine import MarketSimulation
 from limitx.simulation.scenarios import SCENARIOS
 
 gateway = EngineGateway()
 simulation_tasks: dict[str, asyncio.Task[None]] = {}
 last_benchmark: dict[str, object] | None = None
+benchmark_history: list[dict[str, object]] = []
+recovery_points: dict[str, RecoveryPoint] = {}
 simulation_state: dict[str, dict[str, Any]] = {
     symbol: {"status": "IDLE", "scenario": None, "seed": None, "operations": 0, "speed": 1}
     for symbol in gateway.SYMBOLS
@@ -44,6 +56,7 @@ async def _run_simulation(request: SimulationRequest) -> None:
         seed=request.seed,
         scenario=request.scenario,
         book=gateway.books[symbol],
+        center_ticks=gateway.opening_prices[symbol],
     )
     simulation_state[symbol].update(
         status="RUNNING",
@@ -74,10 +87,12 @@ async def _run_simulation(request: SimulationRequest) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     gateway.start()
     for symbol in gateway.SYMBOLS:
-        gateway.seed(symbol, 10_000_000 if "USD" in symbol else 20_000)
+        gateway.seed(symbol, INSTRUMENTS[symbol].reference_price_ticks)
     yield
     for task in simulation_tasks.values():
         task.cancel()
+    if simulation_tasks:
+        await asyncio.gather(*simulation_tasks.values(), return_exceptions=True)
     await gateway.stop()
 
 
@@ -108,7 +123,44 @@ async def health() -> dict[str, object]:
 
 @app.get("/api/symbols")
 async def symbols() -> dict[str, object]:
-    return {"symbols": list(gateway.SYMBOLS)}
+    return {
+        "symbols": [
+            {
+                **asdict(INSTRUMENTS[symbol]),
+                "status": simulation_state[symbol]["status"],
+            }
+            for symbol in gateway.SYMBOLS
+        ]
+    }
+
+
+@app.get("/api/markets")
+async def markets() -> dict[str, object]:
+    return {
+        "markets": [
+            {
+                **gateway.market_summary(symbol),
+                "status": simulation_state[symbol]["status"],
+                "scenario": simulation_state[symbol]["scenario"],
+            }
+            for symbol in gateway.SYMBOLS
+        ]
+    }
+
+
+@app.get("/api/scenarios")
+async def scenarios() -> dict[str, object]:
+    return {
+        "scenarios": [
+            {
+                "key": key,
+                "name": scenario.name,
+                "description": scenario.description,
+                "expected_characteristics": scenario.expected_characteristics,
+            }
+            for key, scenario in SCENARIOS.items()
+        ]
+    }
 
 
 @app.get("/api/book/{symbol}")
@@ -196,7 +248,14 @@ async def simulation_start(request: SimulationRequest) -> dict[str, Any]:
             await existing
     if request.reset:
         gateway.reset(request.symbol)
-        gateway.seed(request.symbol, 10_000_000 if "USD" in request.symbol else 20_000)
+        gateway.seed(request.symbol, INSTRUMENTS[request.symbol].reference_price_ticks)
+    simulation_state[request.symbol].update(
+        status="RUNNING",
+        scenario=request.scenario,
+        seed=request.seed,
+        operations=0,
+        speed=request.speed,
+    )
     task = asyncio.create_task(_run_simulation(request))
     simulation_tasks[request.symbol] = task
     return {"state": simulation_state[request.symbol]}
@@ -223,7 +282,7 @@ async def simulation_reset(symbol: str = Query("BTC-USD")) -> dict[str, Any]:
     if task and not task.done():
         task.cancel()
     gateway.reset(symbol)
-    gateway.seed(symbol, 10_000_000 if "USD" in symbol else 20_000)
+    gateway.seed(symbol, INSTRUMENTS[symbol].reference_price_ticks)
     simulation_state[symbol].update(status="IDLE", scenario=None, seed=None, operations=0)
     return {"state": simulation_state[symbol], "snapshot": gateway.projectors[symbol].snapshot()}
 
@@ -256,6 +315,150 @@ async def system(symbol: str) -> dict[str, Any]:
     return gateway.system_state(symbol)
 
 
+@app.get("/api/orders/{symbol}/{order_id}/lifecycle")
+async def order_lifecycle(symbol: str, order_id: str) -> dict[str, Any]:
+    _require_symbol(symbol)
+    explanation = explain_order(gateway.books[symbol], gateway.journals[symbol], order_id)
+    if explanation is None:
+        raise HTTPException(404, "order not found in journal")
+    return explanation
+
+
+@app.get("/api/xray/{symbol}")
+async def xray(
+    symbol: str,
+    side: Annotated[Side, Query()] = Side.BUY,
+    price_ticks: Annotated[int | None, Query(gt=0)] = None,
+) -> dict[str, Any]:
+    _require_symbol(symbol)
+    book = gateway.books[symbol]
+    index = book.bids if side is Side.BUY else book.asks
+    level = index.get(price_ticks) if price_ticks is not None else index.best
+    if level is None:
+        return {
+            "symbol": symbol,
+            "side": side.value,
+            "selected_level": None,
+            "price_index": [],
+            "order_index_size": len(book.live_orders),
+        }
+    nodes = list(level)
+    return {
+        "symbol": symbol,
+        "side": side.value,
+        "complexity": {
+            "order_id_lookup": "O(1) expected",
+            "unlink_after_lookup": "O(1)",
+            "price_level_index": "O(log P) update",
+        },
+        "price_index": [
+            {
+                "price_ticks": item.price,
+                "quantity": item.total_quantity,
+                "orders": item.order_count,
+                "selected": item is level,
+            }
+            for item in list(index.levels_best_first())[:20]
+        ],
+        "selected_level": {
+            "price_ticks": level.price,
+            "aggregate_quantity": level.total_quantity,
+            "order_count": level.order_count,
+            "head_order_id": level.head.order.order_id if level.head else None,
+            "tail_order_id": level.tail.order.order_id if level.tail else None,
+            "orders": [
+                {
+                    "order_id": node.order.order_id,
+                    "account_id": node.order.account_id,
+                    "remaining_qty": node.order.remaining_qty,
+                    "priority_sequence": node.order.accepted_sequence,
+                    "previous_order_id": node.previous.order.order_id if node.previous else None,
+                    "next_order_id": node.next.order.order_id if node.next else None,
+                    "index_pointer": f"node@{level.price}",
+                }
+                for node in nodes
+            ],
+        },
+        "order_index_size": len(book.live_orders),
+    }
+
+
+@app.get("/api/risk")
+async def risk_console() -> dict[str, Any]:
+    rejected = [
+        event
+        for book in gateway.books.values()
+        for event in book.events
+        if event.event_type is EventType.RISK_REJECTED
+    ]
+    return {
+        "limits": {
+            **asdict(gateway.risk.limits),
+            "enabled_symbols": sorted(gateway.risk.limits.enabled_symbols),
+        },
+        "rejection_counts": dict(Counter(str(event.data.get("reason")) for event in rejected)),
+        "recent_rejections": [event.as_dict() for event in rejected[-30:]][::-1],
+    }
+
+
+@app.post("/api/risk")
+async def configure_risk(request: RiskConfigRequest) -> dict[str, Any]:
+    current = gateway.risk.limits
+    gateway.risk.limits = RiskLimits(
+        max_order_quantity=request.max_order_quantity,
+        max_notional_ticks=request.max_notional_ticks,
+        max_live_orders=request.max_live_orders,
+        max_position=request.max_position,
+        max_absolute_exposure_ticks=current.max_absolute_exposure_ticks,
+        price_collar_bps=request.price_collar_bps,
+        enabled_symbols=current.enabled_symbols,
+    )
+    return await risk_console()
+
+
+@app.post("/api/recovery/snapshot/{symbol}")
+async def recovery_snapshot(symbol: str) -> dict[str, Any]:
+    _require_symbol(symbol)
+    point = create_recovery_point(gateway.books[symbol], gateway.journals[symbol], gateway.risk)
+    recovery_points[symbol] = point
+    return {
+        "symbol": symbol,
+        "snapshot_sequence": point.snapshot["sequence"],
+        "snapshot_checksum": point.snapshot["checksum"],
+        "journal_position": point.journal_position,
+        "snapshot_size_bytes": len(str(point.snapshot).encode()),
+    }
+
+
+@app.post("/api/recovery/verify/{symbol}")
+async def recovery_verify(symbol: str) -> dict[str, Any]:
+    _require_symbol(symbol)
+    point = recovery_points.get(symbol)
+    if point is None:
+        raise HTTPException(409, "create a recovery snapshot first")
+    return recover(
+        point,
+        gateway.journals[symbol],
+        gateway.risk.limits,
+        gateway.books[symbol],
+    )
+
+
+@app.post("/api/experiments/compare")
+async def experiment_compare(request: ScenarioCompareRequest) -> dict[str, Any]:
+    _require_symbol(request.symbol)
+    if request.left not in SCENARIOS or request.right not in SCENARIOS:
+        raise HTTPException(422, "unknown comparison scenario")
+    return await asyncio.to_thread(
+        compare_scenarios,
+        request.left,
+        request.right,
+        symbol=request.symbol,
+        seed=request.seed,
+        operations=request.operations,
+    )
+
+
 @app.post("/api/benchmarks")
 async def benchmark(request: BenchmarkRequest) -> dict[str, object]:
     global last_benchmark
@@ -266,11 +469,21 @@ async def benchmark(request: BenchmarkRequest) -> dict[str, object]:
             operations=request.operations,
             seed=request.seed,
             runs=request.runs,
+            symbol_count=request.symbol_count,
+            add_percent=request.add_percent,
+            cancel_percent=request.cancel_percent,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     last_benchmark = result.as_dict()
+    benchmark_history.append(last_benchmark)
+    del benchmark_history[:-20]
     return last_benchmark
+
+
+@app.get("/api/benchmarks/history")
+async def get_benchmark_history() -> dict[str, object]:
+    return {"runs": list(reversed(benchmark_history))}
 
 
 @app.get("/api/replay/sessions")
@@ -299,16 +512,22 @@ async def replay_load(
     replay = ReplaySession(gateway.journals[symbol])
     target = len(gateway.journals[symbol].entries) if position is None else position
     try:
-        books = replay.jump(target)
+        books = await asyncio.to_thread(replay.jump, target)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     replay_book = books.get(symbol)
     return {
         "session_id": gateway.journals[symbol].session_id,
         "position": replay.position,
-        "total": len(gateway.journals[symbol].entries),
+        "total": target,
+        "live_total": len(gateway.journals[symbol].entries),
         "snapshot": replay_book.snapshot() if replay_book else None,
         "latest_entry": (gateway.journals[symbol].entries[target - 1].events if target else None),
+        "event_window": [
+            event
+            for entry in gateway.journals[symbol].entries[max(0, target - 80) : target]
+            for event in entry.events
+        ][-240:],
     }
 
 
@@ -348,7 +567,7 @@ async def websocket_market(websocket: WebSocket, symbol: str) -> None:
         while True:
             message = await queue.get()
             await websocket.send_json(message)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
         gateway.broker.unsubscribe(symbol, queue)

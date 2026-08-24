@@ -8,6 +8,11 @@ measured core-engine performance.
 The project intentionally prioritizes correctness and inspectability over claims of production
 HFT latency. It is a simulated venue: it has no broker integration and never routes real orders.
 
+The terminal makes the engine observable: realistic deterministic instrument fixtures, live L2
+depth, execution tape, exact order reports, event-backed lifecycle explanations, Engine X-Ray,
+snapshot recovery, replay, transport failure injection, risk/surveillance consoles, and measured
+performance history all come from backend state—not frontend-only animation.
+
 ## Demo
 
 ```bash
@@ -16,8 +21,9 @@ make run-backend   # terminal 1
 make run-frontend  # terminal 2
 ```
 
-Open `http://localhost:3000`, press **Run market**, and the default seed `42` immediately produces
-a live ladder, cumulative depth, execution tape, analytics, and replayable command journal.
+Open `http://localhost:3000`; the default seed `42` automatically starts a populated simulated
+market with a live ladder, cumulative depth, execution tape, analytics, and replayable journal.
+**Run scenario** restarts from the selected seed/regime.
 `docker compose up --build` provides the same backend/frontend pair.
 
 ## Engineering highlights
@@ -31,12 +37,27 @@ a live ladder, cumulative depth, execution tape, analytics, and replayable comma
   stable JSON, deterministic replay, and SHA-256 state checksums.
 - Separate risk gateway, L1/L2 projection, sequence-linked deltas, bounded WebSocket subscriber
   queues, and snapshot recovery after a delta gap.
-- Seeded noise, market-making, momentum, taker, and whale agents across nine market regimes,
+- Seeded noise, market-making, momentum, taker, and whale agents across eleven market regimes,
   including a synthetic cancel storm.
 - Explicit invariant checks, deterministic edge-case tests, Hypothesis property tests, and
   thousands of randomized differential operations against a separate list-based oracle.
 - Microstructure analytics, an exact tick-based account ledger, explainable surveillance
   heuristics, exportable artifacts, and a read-only evidence-grounded Replay Analyst.
+- A journal-backed order lifecycle inspector and multi-level match visualizer explain partial
+  fills, IOC remainder cancellation, atomic FOK rejection, post-only rejection, risk decisions,
+  priority-aware modification, and cancellation with concrete event IDs.
+- Engine X-Ray renders the real selected `PriceLevel`, linked FIFO nodes, price index, and direct
+  order-index pointers; the recovery lab reconstructs a captured snapshot with subsequent journal
+  commands and compares expected versus recovered checksums.
+- Performance Lab 2.0 supports custom add/cancel/modify mixes, one to four symbols, latency
+  histograms, active-state/memory facts, and local run comparisons without significance claims.
+- The custom Limit X mark reacts only to real engine outcomes: restrained buy/sell acceptance,
+  trade convergence, multi-level sweep, rejection, and market-data resynchronization states are
+  coalesced to keep high-volume sessions smooth and become static accents under reduced motion.
+- A cinematic closing wordmark renders `Limit X` entirely from a sampled matrix of tiny square
+  canvas cells. Slow organic buy/sell energy fields travel only inside the glyph mask, react to
+  real market events, pause offscreen, scale for high-DPI displays, and remain static under reduced
+  motion.
 
 ## Architecture
 
@@ -49,9 +70,11 @@ flowchart LR
     B --> J[Append-only journal]
     B --> P[L1/L2 projection]
     B --> A[Ledger + analytics]
+    B --> X[Lifecycle / Engine X-Ray]
     P --> W[Bounded WebSocket queues]
     W --> U[Next.js laboratory]
     J --> R[Replay + audit]
+    J --> S[Snapshot recovery]
     R --> H[Checksum verification]
 ```
 
@@ -86,16 +109,23 @@ make frontend-check
 Core-only measurements taken on this machine (Apple M2, 8 GB RAM, macOS 15.7.8, CPython 3.14.3)
 after tests and replay checks passed:
 
-| Workload | Operations | Runs | Throughput | p50 | p95 | p99 |
-|---|---:|---:|---:|---:|---:|---:|
-| Mixed | 10,000 | 3 | 191,789 ops/s | 4.250 μs | 14.375 μs | 21.875 μs |
-| Mixed | 100,000 | 3 | 170,873 ops/s | 4.333 μs | 14.500 μs | 23.625 μs |
-| Cancel storm | 100,000 | 3 | 342,972 ops/s | 1.125 μs | 5.625 μs | 15.291 μs |
-| Mixed | 1,000,000 | 1 | 91,189 ops/s | 5.834 μs | 20.500 μs | 30.292 μs |
+| Workload | Operations | Symbols | Runs | Throughput | p50 | p95 | p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Mixed | 10,000 | 1 | 3 | 181,623 ops/s | 4.167 μs | 14.333 μs | 23.292 μs |
+| Mixed | 100,000 | 1 | 3 | 173,825 ops/s | 4.209 μs | 14.291 μs | 22.959 μs |
+| Cancel storm | 100,000 | 1 | 3 | 346,027 ops/s | 1.125 μs | 5.708 μs | 14.875 μs |
+| Mixed | 100,000 | 4 | 3 | 168,825 ops/s | 4.292 μs | 14.375 μs | 21.584 μs |
+| Mixed memory stress | 1,000,000 | 1 | 1 | 96,950 ops/s | 5.709 μs | 20.042 μs | 28.250 μs |
 
-These are local CPython observations, not production guarantees. The one-million-operation run
-retained the complete event/trade history and exhibited a 1.256 s maximum outlier, illustrating
-runtime, GC, memory-growth, and scheduler noise. See [benchmark methodology](docs/benchmarks.md).
+These are second-pass local CPython observations, not production guarantees. The one-million
+operation run retained the complete event/trade history, reached roughly 1.28 GB maximum RSS, and
+exhibited a 1.110 s maximum outlier—making memory growth, runtime, GC, and scheduler noise
+visible rather than hiding them. See [benchmark methodology](docs/benchmarks.md).
+
+Profiling caught an accidental FOK-liquidity preflight on every order. At that optimization
+checkpoint, limiting the walk to FOK orders on the identical 100K mixed workload (seed 42, three
+runs) improved observed throughput from 141,824 to 180,506 ops/s (+27.3%) and reduced pooled p99 from 26.375 to
+20.916 μs (-20.7%). This is a local before/after observation, not a generalized guarantee.
 
 ```bash
 python -m limitx.bench --scenario mixed --orders 100000 --seed 42 --runs 3
@@ -115,7 +145,9 @@ python scripts/export_demo.py  # events.jsonl, session.jsonl, trades/depth/metri
 ## API
 
 FastAPI exposes health, symbols, book/depth, trades, order submit/cancel/modify, live orders,
-simulation controls, metrics, system state, replay, benchmarks, exports, analyst, and
+simulation controls, lifecycle evidence, Engine X-Ray, risk configuration, surveillance,
+snapshot recovery, regime comparison, metrics, system state, replay, benchmarks/history,
+exports, analyst, and
 `/ws/market/{symbol}`. OpenAPI is available at `http://localhost:8000/docs`.
 
 ## Project map
@@ -147,4 +179,5 @@ to Rust or C++. Limit X deliberately does not claim that migration has happened.
 
 Further reading: [trade-offs](docs/tradeoffs.md), [testing](docs/testing.md),
 [market data](docs/market-data.md), [AI grounding](docs/ai-grounding.md), and the
-[interview guide](docs/interview-guide.md).
+[interview guide](docs/interview-guide.md). For a recruiter/interview walkthrough and keyboard
+map, see the [product guide](docs/product-guide.md).

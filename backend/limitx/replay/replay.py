@@ -37,13 +37,13 @@ class ReplaySession:
         self.books.clear()
         self.risk = RiskGateway()
 
-    def step(self) -> dict[str, Any] | None:
+    def step(self, *, include_snapshot: bool = True) -> dict[str, Any] | None:
         if self.position >= len(self.journal.entries):
             return None
         entry = self.journal.entries[self.position]
         command = command_from_dict(entry.command)
         symbol = self._symbol(command)
-        book = self.books.setdefault(symbol, OrderBook(symbol, audit_mode=True))
+        book = self.books.setdefault(symbol, OrderBook(symbol))
         if isinstance(command, NewOrder) and self.journal.risk_enabled:
             decision = self.risk.check(command.order, book)
             if decision.accepted:
@@ -51,7 +51,13 @@ class ReplaySession:
             else:
                 if decision.reason is None:
                     raise AssertionError("rejected risk decision must have a reason")
-                events = book.reject_by_risk(command.order, decision.reason, decision.detail)
+                events = book.reject_by_risk(
+                    command.order,
+                    decision.reason,
+                    decision.detail,
+                    observed=decision.observed,
+                    threshold=decision.threshold,
+                )
         else:
             events = book.process(command)
         if self.journal.risk_enabled:
@@ -65,7 +71,7 @@ class ReplaySession:
             "position": self.position,
             "command_sequence": entry.command_sequence,
             "events": [event.as_dict() for event in events],
-            "snapshot": book.snapshot(),
+            "snapshot": book.snapshot() if include_snapshot else None,
         }
 
     def jump(self, position: int) -> dict[str, OrderBook]:
@@ -74,14 +80,16 @@ class ReplaySession:
         if position < self.position:
             self.reset()
         while self.position < position:
-            self.step()
+            self.step(include_snapshot=False)
+        for book in self.books.values():
+            book.assert_invariants()
         return self.books
 
     def run(self, *, compare_events: bool = True) -> ReplayResult:
         divergences: list[str] = []
         while self.position < len(self.journal.entries):
             entry = self.journal.entries[self.position]
-            result = self.step()
+            result = self.step(include_snapshot=False)
             assert result is not None
             if compare_events and list(entry.events) != result["events"]:
                 divergences.append(f"command {entry.command_sequence}: event output differs")
@@ -89,4 +97,6 @@ class ReplaySession:
             actual = self.books[symbol].checksum() if symbol in self.books else "missing"
             if actual != expected:
                 divergences.append(f"{symbol}: checksum expected {expected}, got {actual}")
+        for book in self.books.values():
+            book.assert_invariants()
         return ReplayResult(self.books, self.position, tuple(divergences))

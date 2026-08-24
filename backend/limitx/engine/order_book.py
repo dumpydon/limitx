@@ -44,6 +44,7 @@ class OrderBook:
         self.bids = PriceIndex(Side.BUY)
         self.asks = PriceIndex(Side.SELL)
         self.live_orders: dict[str, OrderNode] = {}
+        self.live_order_counts: dict[str, int] = {}
         self.orders: dict[str, Order] = {}
         self.trades: list[dict[str, Any]] = []
         self.events: list[EngineEvent] = []
@@ -100,9 +101,10 @@ class OrderBook:
         reason: RejectReason,
         *,
         kind: EventType = EventType.ORDER_REJECTED,
+        **data: Any,
     ) -> list[EngineEvent]:
         order.status = OrderStatus.REJECTED
-        event = self._emit(kind, order_id=order.order_id, reason=reason.value)
+        event = self._emit(kind, order_id=order.order_id, reason=reason.value, **data)
         return [event]
 
     def _validation_reason(self, order: Order) -> RejectReason | None:
@@ -158,12 +160,22 @@ class OrderBook:
         if reason:
             return self._reject(order, reason)
         if order.time_in_force is TimeInForce.POST_ONLY and self._crosses(order):
-            return self._reject(order, RejectReason.POST_ONLY_WOULD_TRADE)
-        if (
-            order.time_in_force is TimeInForce.FOK
-            and self._available_liquidity(order) < order.quantity
-        ):
-            return self._reject(order, RejectReason.FOK_NOT_FILLABLE)
+            return self._reject(
+                order,
+                RejectReason.POST_ONLY_WOULD_TRADE,
+                order_price_ticks=order.price_ticks,
+                opposing_best_ticks=(self.best_ask if order.side is Side.BUY else self.best_bid),
+            )
+        if order.time_in_force is TimeInForce.FOK:
+            available_liquidity = self._available_liquidity(order)
+            if available_liquidity < order.quantity:
+                return self._reject(
+                    order,
+                    RejectReason.FOK_NOT_FILLABLE,
+                    requested_quantity=order.quantity,
+                    eligible_quantity=available_liquidity,
+                    limit_price_ticks=order.price_ticks,
+                )
 
         self.orders[order.order_id] = order
         accepted = self._emit(
@@ -189,7 +201,15 @@ class OrderBook:
         self._finish_book_update(emitted)
         return emitted
 
-    def reject_by_risk(self, order: Order, reason: RejectReason, detail: str) -> list[EngineEvent]:
+    def reject_by_risk(
+        self,
+        order: Order,
+        reason: RejectReason,
+        detail: str,
+        *,
+        observed: int | None = None,
+        threshold: int | None = None,
+    ) -> list[EngineEvent]:
         """Sequence a gateway rejection without allowing the order into matcher state."""
         if order.order_id in self.orders:
             return self._reject(order, RejectReason.DUPLICATE_ORDER_ID)
@@ -200,6 +220,8 @@ class OrderBook:
             order_id=order.order_id,
             reason=reason.value,
             detail=detail,
+            observed=observed,
+            threshold=threshold,
         )
         return [event]
 
@@ -287,6 +309,7 @@ class OrderBook:
             if maker.remaining_qty == 0:
                 level.remove(maker_node)
                 self.live_orders.pop(maker.order_id, None)
+                self._decrement_live_count(maker.account_id)
                 if level.is_empty:
                     opposing.remove(level.price)
 
@@ -335,6 +358,19 @@ class OrderBook:
         node = OrderNode(order)
         index.get_or_create(order.price_ticks).append(node)
         self.live_orders[order.order_id] = node
+        self.live_order_counts[order.account_id] = (
+            self.live_order_counts.get(order.account_id, 0) + 1
+        )
+
+    def _decrement_live_count(self, account_id: str) -> None:
+        remaining = self.live_order_counts.get(account_id, 0) - 1
+        if remaining > 0:
+            self.live_order_counts[account_id] = remaining
+        else:
+            self.live_order_counts.pop(account_id, None)
+
+    def live_order_count(self, account_id: str) -> int:
+        return self.live_order_counts.get(account_id, 0)
 
     def _finish_book_update(self, emitted: list[EngineEvent]) -> None:
         emitted.append(
@@ -364,6 +400,7 @@ class OrderBook:
         if level.is_empty:
             index.remove(level.price)
         self.live_orders.pop(order_id)
+        self._decrement_live_count(order.account_id)
         order.status = OrderStatus.CANCELLED
         emitted = [
             self._emit(
@@ -421,6 +458,10 @@ class OrderBook:
                         EventType.MODIFY_REJECTED,
                         order_id=order_id,
                         reason=RejectReason.POST_ONLY_WOULD_TRADE.value,
+                        order_price_ticks=price,
+                        opposing_best_ticks=(
+                            self.best_ask if order.side is Side.BUY else self.best_bid
+                        ),
                     )
                 ]
 
@@ -456,6 +497,7 @@ class OrderBook:
         if level.is_empty:
             index.remove(level.price)
         self.live_orders.pop(order_id)
+        self._decrement_live_count(order.account_id)
         arrival_mid_ticks_x2 = (
             self.best_bid + self.best_ask
             if self.best_bid is not None and self.best_ask is not None
@@ -533,6 +575,7 @@ class OrderBook:
                 "live_order_count": len(self.live_orders),
                 "depth": self.depth(),
                 "checksum": self.checksum(),
+                "seen_order_ids": sorted(self.orders),
             }
         )
         return state
@@ -568,6 +611,21 @@ class OrderBook:
                     book.orders[order.order_id] = order
                     book._rest(order)
         book.sequencer.value = int(snapshot["sequence"])
+        for order_id in snapshot.get("seen_order_ids", []):
+            order_key = str(order_id)
+            if order_key not in book.orders:
+                book.orders[order_key] = Order(
+                    order_id=order_key,
+                    symbol=book.symbol,
+                    account_id="snapshot-history",
+                    side=Side.BUY,
+                    order_type=OrderType.LIMIT,
+                    quantity=1,
+                    price_ticks=1,
+                    time_in_force=TimeInForce.GTC,
+                    status=OrderStatus.REJECTED,
+                    remaining_qty=1,
+                )
         if snapshot.get("checksum") and book.checksum() != snapshot["checksum"]:
             raise ValueError("snapshot checksum mismatch")
         book.assert_invariants()
@@ -605,6 +663,11 @@ class OrderBook:
                 assert total == level.total_quantity
                 assert count == level.order_count
         assert seen == set(self.live_orders)
+        expected_account_counts: dict[str, int] = {}
+        for node in self.live_orders.values():
+            account_id = node.order.account_id
+            expected_account_counts[account_id] = expected_account_counts.get(account_id, 0) + 1
+        assert self.live_order_counts == expected_account_counts
         for order in self.orders.values():
             assert order.filled_qty >= 0
             assert 0 <= order.remaining_qty <= order.quantity

@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 limitx-bench = "limitx.benchmarks.runner:main"
 limitx-audit = "limitx.replay.audit:main"
+limitx-profile = "limitx.profile:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["limitx"]

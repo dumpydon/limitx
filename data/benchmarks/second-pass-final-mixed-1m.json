@@ -1,0 +1,76 @@
+{
+  "active_orders": 97554,
+  "adds": 659965,
+  "cancels": 220092,
+  "elapsed_seconds": 10.314592416,
+  "latency_histogram": [
+    {
+      "count": 0,
+      "range": "0-1000",
+      "upper_ns": 1000
+    },
+    {
+      "count": 285162,
+      "range": "1000-2500",
+      "upper_ns": 2500
+    },
+    {
+      "count": 29503,
+      "range": "2500-5000",
+      "upper_ns": 5000
+    },
+    {
+      "count": 470042,
+      "range": "5000-10000",
+      "upper_ns": 10000
+    },
+    {
+      "count": 193966,
+      "range": "10000-25000",
+      "upper_ns": 25000
+    },
+    {
+      "count": 19975,
+      "range": "25000-50000",
+      "upper_ns": 50000
+    },
+    {
+      "count": 903,
+      "range": "50000-100000",
+      "upper_ns": 100000
+    },
+    {
+      "count": 298,
+      "range": "100000-250000",
+      "upper_ns": 250000
+    },
+    {
+      "count": 116,
+      "range": "250000-1000000",
+      "upper_ns": 1000000
+    },
+    {
+      "count": 35,
+      "range": ">=1000000",
+      "upper_ns": "max"
+    }
+  ],
+  "max_ns": 1109694250,
+  "max_rss_platform_units": 1284243456,
+  "modifies": 119943,
+  "operations": 1000000,
+  "p50_ns": 5709,
+  "p95_ns": 20042,
+  "p99_ns": 28250,
+  "platform": "macOS-15.7.8-arm64-arm-64bit-Mach-O",
+  "price_levels": 81,
+  "processor": "arm",
+  "python_version": "3.14.3",
+  "runs": 1,
+  "scenario": "mixed",
+  "seed": 42,
+  "symbol_count": 1,
+  "throughput_ops_per_second": 96950.02571781698,
+  "trades": 514160,
+  "warmup_operations": 10000
+}

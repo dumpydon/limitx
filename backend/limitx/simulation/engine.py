@@ -128,6 +128,12 @@ class MarketSimulation:
                 id_counter=self.id_counter,
             )
             command = agent.command(context, self.book)
+            if (
+                isinstance(command, NewOrder)
+                and command.order.order_type is OrderType.MARKET
+                and self.scenario.forced_aggressor_side is not None
+            ):
+                command.order.side = self.scenario.forced_aggressor_side
         return command
 
     def run(self, operations: int, *, seed_liquidity: bool = True) -> SimulationResult:

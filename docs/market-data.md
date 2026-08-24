@@ -12,10 +12,13 @@ depth sequence. Duplicate, old, or gapped delivery enters `RESYNCING` and fetche
 The UI includes drop/delay/duplicate injection for this transport path; it never alters matcher
 state.
 
+The upgraded Failure Lab also injects out-of-order delivery and records the actual expected and
+received sequence, the resynchronization request, applied snapshot sequence, and recovered state.
+Concurrent gap signals are coalesced so one fault produces one authoritative recovery cycle.
+
 The L2 checksum is BLAKE2s over canonical symbol plus aggregate bid/ask depth. It intentionally
 excludes account IDs and private L3 priority fields.
 
 WebSocket subscribers use bounded queues. If a browser falls behind, publication clears its stale
 queue and inserts a current snapshot. Matching never awaits a slow socket. This sacrifices every
 intermediate visual delta while preserving current state and sequence safety.
-

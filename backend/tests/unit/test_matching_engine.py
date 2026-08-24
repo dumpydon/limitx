@@ -73,6 +73,8 @@ def test_fok_preflight_is_atomic(make_order):
     fok = make_order("F1", Side.BUY, 9, 102, tif=TimeInForce.FOK)
     events = book.submit(fok)
     assert events[0].data["reason"] == "FOK_NOT_FILLABLE"
+    assert events[0].data["requested_quantity"] == 9
+    assert events[0].data["eligible_quantity"] == 8
     assert book.canonical_state()["bids"] == before["bids"]
     assert book.canonical_state()["asks"] == before["asks"]
     assert not book.trades
@@ -156,3 +158,12 @@ def test_snapshot_roundtrip_and_tamper_detection(make_order):
     bad["checksum"] = "wrong"
     with pytest.raises(ValueError, match="checksum"):
         OrderBook.from_snapshot(bad)
+
+
+def test_snapshot_preserves_seen_ids_for_duplicate_rejection(make_order):
+    book = OrderBook("BTC-USD")
+    book.submit(make_order("historical", Side.BUY, 2, 100))
+    book.cancel("historical")
+    restored = OrderBook.from_snapshot(book.snapshot())
+    event = restored.submit(make_order("historical", Side.SELL, 2, 101))[0]
+    assert event.data["reason"] == "DUPLICATE_ORDER_ID"

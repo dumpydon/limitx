@@ -52,12 +52,40 @@ class SimulationRequest(BaseModel):
 class BenchmarkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenario: str = "mixed"
-    operations: int = Field(default=10_000, ge=100, le=100_000)
+    operations: int = Field(default=10_000, ge=100, le=1_000_000)
     seed: int = 42
     runs: int = Field(default=1, ge=1, le=5)
+    symbol_count: int = Field(default=1, ge=1, le=4)
+    add_percent: int = Field(default=66, ge=1, le=100)
+    cancel_percent: int = Field(default=22, ge=0, le=99)
+    modify_percent: int = Field(default=12, ge=0, le=99)
+
+    @model_validator(mode="after")
+    def validate_mix(self) -> BenchmarkRequest:
+        if self.add_percent + self.cancel_percent + self.modify_percent != 100:
+            raise ValueError("operation percentages must total 100")
+        return self
 
 
 class AnalystRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     symbol: str = "BTC-USD"
     question: str = Field(min_length=1, max_length=500)
+
+
+class RiskConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_order_quantity: int = Field(ge=100, le=100_000)
+    max_notional_ticks: int = Field(ge=100_000, le=20_000_000_000)
+    max_live_orders: int = Field(ge=10, le=10_000)
+    max_position: int = Field(ge=100, le=1_000_000)
+    price_collar_bps: int = Field(ge=10, le=5_000)
+
+
+class ScenarioCompareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    left: str = "normal"
+    right: str = "thin_liquidity"
+    symbol: str = "BTC-USD"
+    seed: int = Field(default=42, ge=0, le=2**31 - 1)
+    operations: int = Field(default=1_000, ge=100, le=5_000)

@@ -25,3 +25,7 @@ track citation validity, known-scenario attribution, and unsupported-claim rate.
 The analyst explains simulated events. It is not financial advice, does not place orders, cannot
 alter state, and makes no trading decisions.
 
+The browser's AI Evidence panel renders every claim beside its validated evidence IDs. Common
+order questions do not need AI at all: the lifecycle service deterministically explains FOK
+eligible quantity, post-only opposing best price, risk observed/threshold values, IOC remainder
+cancellation, resting FIFO state, modification, and direct cancellation from journal facts.

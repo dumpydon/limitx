@@ -117,4 +117,25 @@ class SurveillanceEngine:
                         evidence_ids=tuple(event.evidence_id for event in limit_adds[-6:]),
                     )
                 )
+        trades_by_taker: dict[str, list[EngineEvent]] = defaultdict(list)
+        for event in recent:
+            if event.event_type is EventType.TRADE_EXECUTED:
+                trades_by_taker[str(event.data.get("taker_order_id"))].append(event)
+        for taker_order_id, trade_events in trades_by_taker.items():
+            total_quantity = sum(int(event.data["quantity"]) for event in trade_events)
+            distinct_levels = {int(event.data["price_ticks"]) for event in trade_events}
+            if len(distinct_levels) >= 3 and total_quantity >= 150:
+                participant = str(trade_events[0].data.get("taker_account_id", "unknown"))
+                alerts.append(
+                    SurveillanceAlert(
+                        alert_id=f"alert:large-sweep:{taker_order_id}:{recent[-1].sequence}",
+                        participant=participant,
+                        rule="LARGE_SWEEP",
+                        explanation=(
+                            f"Aggressive order {taker_order_id} executed {total_quantity} units "
+                            f"across {len(distinct_levels)} resting price levels."
+                        ),
+                        evidence_ids=tuple(event.evidence_id for event in trade_events[-8:]),
+                    )
+                )
         return alerts

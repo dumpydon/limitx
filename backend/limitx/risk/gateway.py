@@ -28,6 +28,8 @@ class RiskDecision:
     accepted: bool
     reason: RejectReason | None = None
     detail: str = ""
+    observed: int | None = None
+    threshold: int | None = None
 
 
 class RiskGateway:
@@ -40,7 +42,13 @@ class RiskGateway:
         if order.symbol not in limits.enabled_symbols:
             return RiskDecision(False, RejectReason.RISK_SYMBOL_DISABLED, "symbol is disabled")
         if order.quantity > limits.max_order_quantity:
-            return RiskDecision(False, RejectReason.RISK_MAX_ORDER_QUANTITY, "order quantity limit")
+            return RiskDecision(
+                False,
+                RejectReason.RISK_MAX_ORDER_QUANTITY,
+                "order quantity exceeds configured maximum",
+                order.quantity,
+                limits.max_order_quantity,
+            )
         reference_price = order.price_ticks
         if reference_price is None:
             reference_price = book.best_ask if order.side is Side.BUY else book.best_bid
@@ -49,20 +57,42 @@ class RiskGateway:
         notional = reference_price * order.quantity
         if notional > limits.max_notional_ticks:
             return RiskDecision(
-                False, RejectReason.RISK_MAX_NOTIONAL, "single-order notional limit"
+                False,
+                RejectReason.RISK_MAX_NOTIONAL,
+                "single-order notional exceeds configured maximum",
+                notional,
+                limits.max_notional_ticks,
             )
-        live_count = sum(1 for item in book.iter_live_orders(order.account_id))
+        live_count = book.live_order_count(order.account_id)
         if live_count >= limits.max_live_orders:
-            return RiskDecision(False, RejectReason.RISK_MAX_LIVE_ORDERS, "live-order limit")
+            return RiskDecision(
+                False,
+                RejectReason.RISK_MAX_LIVE_ORDERS,
+                "account live-order count reached configured maximum",
+                live_count,
+                limits.max_live_orders,
+            )
         current_position = self.state.positions.get((order.account_id, order.symbol), 0)
         signed_quantity = order.quantity if order.side is Side.BUY else -order.quantity
         if abs(current_position + signed_quantity) > limits.max_position:
-            return RiskDecision(False, RejectReason.RISK_MAX_POSITION, "position limit")
+            return RiskDecision(
+                False,
+                RejectReason.RISK_MAX_POSITION,
+                "projected position exceeds configured maximum",
+                abs(current_position + signed_quantity),
+                limits.max_position,
+            )
         if (
             abs((current_position + signed_quantity) * reference_price)
             > limits.max_absolute_exposure_ticks
         ):
-            return RiskDecision(False, RejectReason.RISK_MAX_EXPOSURE, "absolute exposure limit")
+            return RiskDecision(
+                False,
+                RejectReason.RISK_MAX_EXPOSURE,
+                "projected absolute exposure exceeds configured maximum",
+                abs((current_position + signed_quantity) * reference_price),
+                limits.max_absolute_exposure_ticks,
+            )
         if (
             order.price_ticks is not None
             and book.best_bid is not None
@@ -71,7 +101,13 @@ class RiskGateway:
             mid = (book.best_bid + book.best_ask) // 2
             distance_bps = abs(order.price_ticks - mid) * 10_000 // max(mid, 1)
             if distance_bps > limits.price_collar_bps:
-                return RiskDecision(False, RejectReason.RISK_PRICE_COLLAR, "price outside collar")
+                return RiskDecision(
+                    False,
+                    RejectReason.RISK_PRICE_COLLAR,
+                    "order price is outside the configured midpoint collar",
+                    distance_bps,
+                    limits.price_collar_bps,
+                )
         return RiskDecision(True)
 
     def apply_trade(self, trade: dict[str, object]) -> None:

@@ -43,6 +43,15 @@ offline analytics, and evidence IDs for explanations.
 snapshot. The client also compares `previous_sequence`; a gap triggers resync instead of blind
 application.
 
+**How do you prove recovery from a mid-session snapshot?** The recovery point stores L3 live
+orders, seen IDs, engine sequence, checksum, journal position, and symbol risk positions. The lab
+continues trading, reconstructs from that point, replays only subsequent commands, compares event
+output, runs invariants, and requires the final checksum to match.
+
+**Is Engine X-Ray a mock diagram?** No. The endpoint reads the current `PriceIndex`, selected
+`PriceLevel`, head/tail, every displayed node's real previous/next pointers, and the live order
+index. It has no second copy of book state.
+
 **How do you guarantee correctness?** Explicit invariants plus an edge-case matrix, Hypothesis
 sequences, a structurally separate reference matcher, event-equivalent replay, and checksum audit.
 
@@ -71,3 +80,7 @@ canonical commands, assert invariants, and compare the expected final checksum b
 protocols, precise clock discipline, authorization, drop-copy, operational controls, redundancy,
 schema evolution, disaster recovery, and independent conformance testing.
 
+**How did profiling change the code?** cProfile showed `_available_liquidity` in every submit after
+adding FOK evidence. It should only run for FOK. Guarding it restored the intended semantics and on
+the identical local 100K/seed-42/three-run workload changed observed throughput from 141,824 to
+180,506 ops/s and p99 from 26.375 to 20.916 μs. Tests passed before either result was accepted.

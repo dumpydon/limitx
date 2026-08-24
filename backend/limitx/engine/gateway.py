@@ -12,6 +12,7 @@ from limitx.analytics.microstructure import calculate_metrics
 from limitx.analytics.surveillance import SurveillanceEngine
 from limitx.domain.commands import Command, NewOrder
 from limitx.domain.enums import EventType, OrderType, Side, TimeInForce
+from limitx.domain.instruments import INSTRUMENTS
 from limitx.domain.order import Order
 from limitx.engine.events import EngineEvent
 from limitx.engine.order_book import OrderBook
@@ -80,6 +81,9 @@ class EngineGateway:
         self.surveillance = SurveillanceEngine()
         self.broker = EventBroker()
         self.alerts: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in self.SYMBOLS}
+        self.opening_prices = {
+            symbol: instrument.reference_price_ticks for symbol, instrument in INSTRUMENTS.items()
+        }
         self.workers = {
             symbol: SymbolWorker(symbol, lambda command, s=symbol: self.process_direct(s, command))
             for symbol in self.SYMBOLS
@@ -111,7 +115,13 @@ class EngineGateway:
             else:
                 if decision.reason is None:
                     raise AssertionError("rejected risk decision must have a reason")
-                events = book.reject_by_risk(command.order, decision.reason, decision.detail)
+                events = book.reject_by_risk(
+                    command.order,
+                    decision.reason,
+                    decision.detail,
+                    observed=decision.observed,
+                    threshold=decision.threshold,
+                )
         else:
             events = book.process(command)
         self.journals[symbol].record(command, events)
@@ -143,6 +153,7 @@ class EngineGateway:
         }
 
     def seed(self, symbol: str, center_ticks: int = 10_000_000, levels: int = 12) -> None:
+        self.opening_prices[symbol] = center_ticks
         for offset in range(levels, 0, -1):
             for side in (Side.BUY, Side.SELL):
                 order = Order(
@@ -161,6 +172,13 @@ class EngineGateway:
 
     def system_state(self, symbol: str) -> dict[str, Any]:
         book = self.books[symbol]
+        opening = self.opening_prices[symbol]
+        last_trade = int(book.trades[-1]["price_ticks"]) if book.trades else None
+        mark = last_trade or (
+            (book.best_bid + book.best_ask) // 2
+            if book.best_bid is not None and book.best_ask is not None
+            else opening
+        )
         snapshot_size = len(json.dumps(book.snapshot(), separators=(",", ":")).encode())
         return {
             "engine_sequence": book.sequencer.value,
@@ -174,5 +192,33 @@ class EngineGateway:
             "last_checksum": book.checksum(),
             "snapshot_size_bytes": snapshot_size,
             "process_max_rss_platform_units": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            "reference_price_ticks": opening,
+            "last_trade_ticks": last_trade,
+            "absolute_move_ticks": mark - opening,
+            "percentage_move": (mark - opening) * 100 / opening,
+            "instrument": {
+                "display_name": INSTRUMENTS[symbol].display_name,
+                "tick_size": INSTRUMENTS[symbol].tick_size,
+                "quantity_unit": INSTRUMENTS[symbol].quantity_unit,
+                "provenance": INSTRUMENTS[symbol].provenance,
+            },
             "metrics": calculate_metrics(book),
+        }
+
+    def market_summary(self, symbol: str) -> dict[str, Any]:
+        state = self.system_state(symbol)
+        book = self.books[symbol]
+        return {
+            "symbol": symbol,
+            "best_bid": book.best_bid,
+            "best_ask": book.best_ask,
+            "spread_ticks": (
+                book.best_ask - book.best_bid
+                if book.best_bid is not None and book.best_ask is not None
+                else None
+            ),
+            "last_trade_ticks": state["last_trade_ticks"],
+            "volume": state["metrics"]["trade_volume"],
+            "sequence": book.sequencer.value,
+            "worker_queue_depth": self.workers[symbol].queue.qsize(),
         }
