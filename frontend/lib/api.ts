@@ -14,6 +14,5 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function websocketUrl(path: string): string {
-  return `${API_BASE.replace(/^http/, "ws")}${path}`;
+  return `${API_BASE.replace(/^http/, "ws").replace(/\/$/, "")}${path}`;
 }
-

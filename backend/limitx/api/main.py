@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -47,6 +48,18 @@ simulation_state: dict[str, dict[str, Any]] = {
     symbol: {"status": "IDLE", "scenario": None, "seed": None, "operations": 0, "speed": 1}
     for symbol in gateway.SYMBOLS
 }
+
+DEFAULT_CORS_ORIGINS = {
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://limitx.dumpydon.workers.dev",
+}
+
+
+def cors_origins() -> list[str]:
+    configured = os.getenv("LIMITX_CORS_ORIGINS", "")
+    configured_origins = {origin.strip() for origin in configured.split(",") if origin.strip()}
+    return sorted(DEFAULT_CORS_ORIGINS | configured_origins)
 
 
 async def _run_simulation(request: SimulationRequest) -> None:
@@ -104,7 +117,7 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["content-type"],

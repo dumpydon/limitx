@@ -15,6 +15,10 @@ backend/data/*.json
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/.open-next/
+frontend/.wrangler/
+frontend/.dev.vars*
+frontend/cloudflare-env.d.ts
 data/*.jsonl
 data/*.json
 data/*.csv

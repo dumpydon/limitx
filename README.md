@@ -26,6 +26,14 @@ market with a live ladder, cumulative depth, execution tape, analytics, and repl
 **Run scenario** restarts from the selected seed/regime.
 `docker compose up --build` provides the same backend/frontend pair.
 
+## Production deployment
+
+The FastAPI backend is prepared for a Render Free Web Service and the Next.js frontend is prepared
+for the Cloudflare Workers OpenNext adapter. Use [Render deployment](docs/render-deployment.md) for
+the exact dashboard settings. The Render URL must be supplied as `NEXT_PUBLIC_API_URL` when the
+`limitx` Worker is deployed; it is intentionally not hard-coded because Render assigns the service
+hostname.
+
 ## Engineering highlights
 
 - Integer-tick matching with resting-price execution and strict price-time priority.

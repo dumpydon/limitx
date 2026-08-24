@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, websocketUrl } from "./api";
+import { API_BASE, api, websocketUrl } from "./api";
 import type {
+  BackendStatus,
   Envelope,
   FailureMode,
   MarketPayload,
@@ -19,6 +20,10 @@ const EMPTY: MarketPayload = {
   checksum: "—",
 };
 
+const HEALTH_RETRY_MS = 3_000;
+const HEALTH_CONNECTED_POLL_MS = 15_000;
+const HEALTH_TIMEOUT_MS = 90_000;
+
 export function useMarket(symbol: string) {
   const [market, setMarket] = useState<MarketPayload>(EMPTY);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -27,6 +32,8 @@ export function useMarket(symbol: string) {
   const [failureMode, setFailureModeState] = useState<FailureMode>("none");
   const [syncEvents, setSyncEvents] = useState<SyncEvent[]>([]);
   const [enginePulse, setEnginePulse] = useState<LogoPulseState | null>(null);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>("CHECKING");
+  const [healthGeneration, setHealthGeneration] = useState(0);
   const lastDepthSequence = useRef(0);
   const injected = useRef(false);
   const failureModeRef = useRef<FailureMode>("none");
@@ -83,7 +90,49 @@ export function useMarket(symbol: string) {
     }
   }, [applySnapshot, logSync, symbol]);
 
+  const retryBackend = useCallback(() => {
+    setHealthGeneration((current) => current + 1);
+  }, []);
+
   useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const pollHealth = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/health`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Health check returned ${response.status}`);
+        if (disposed) return;
+        setBackendStatus("CONNECTED");
+        timer = setTimeout(() => void pollHealth(), HEALTH_CONNECTED_POLL_MS);
+      } catch {
+        if (disposed) return;
+        const elapsed = Date.now() - startedAt;
+        if (elapsed >= HEALTH_TIMEOUT_MS) {
+          setBackendStatus("TIMEOUT");
+          return;
+        }
+        setBackendStatus(elapsed < 9_000 ? "CHECKING" : "WAKING");
+        timer = setTimeout(() => void pollHealth(), HEALTH_RETRY_MS);
+      }
+    };
+
+    queueMicrotask(() => {
+      if (!disposed) setBackendStatus("CHECKING");
+    });
+    void pollHealth();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [healthGeneration]);
+
+  useEffect(() => {
+    if (backendStatus !== "CONNECTED") {
+      queueMicrotask(() => setStatus("CONNECTING"));
+      return;
+    }
     let socket: WebSocket | null = null;
     let reconnect: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
@@ -184,7 +233,7 @@ export function useMarket(symbol: string) {
       if (reconnect) clearTimeout(reconnect);
       socket?.close();
     };
-  }, [applySnapshot, logSync, resync, symbol]);
+  }, [applySnapshot, backendStatus, logSync, resync, symbol]);
 
   return {
     market,
@@ -195,6 +244,8 @@ export function useMarket(symbol: string) {
     setFailureMode,
     syncEvents,
     enginePulse,
+    backendStatus,
+    retryBackend,
     clearSyncEvents: () => setSyncEvents([]),
     resync,
   };

@@ -59,6 +59,8 @@ export interface LiveOrder {
 
 export type SyncStatus = "CONNECTING" | "LIVE" | "RESYNCING" | "OFFLINE";
 
+export type BackendStatus = "CHECKING" | "WAKING" | "CONNECTED" | "TIMEOUT";
+
 export type FailureMode = "none" | "drop" | "duplicate" | "delay" | "out_of_order";
 
 export interface SyncEvent {

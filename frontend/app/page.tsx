@@ -6,6 +6,7 @@ import { ControlsView } from "@/components/ControlsView";
 import { DepthChart } from "@/components/DepthChart";
 import { DotMatrixWordmark } from "@/components/DotMatrixWordmark";
 import { EngineView } from "@/components/EngineView";
+import { EngineConnectionOverlay } from "@/components/EngineConnectionOverlay";
 import { FailureLab } from "@/components/FailureLab";
 import { LifecycleInspector } from "@/components/LifecycleInspector";
 import { LiveOrders } from "@/components/LiveOrders";
@@ -35,7 +36,7 @@ const FALLBACK_REFERENCE: Record<string, number> = { "BTC-USD": 6_784_200, "ETH-
 export default function Home() {
   const [symbol, setSymbol] = useState("BTC-USD");
   const [view, setView] = useState<View>("market");
-  const { market, trades, sequence, status, failureMode, setFailureMode, syncEvents, clearSyncEvents, enginePulse } = useMarket(symbol);
+  const { market, trades, sequence, status, failureMode, setFailureMode, syncEvents, clearSyncEvents, enginePulse, backendStatus, retryBackend } = useMarket(symbol);
   const { pulse: logoPulse, trigger: triggerLogo } = useLogoPulse();
   const [logoPreview, setLogoPreview] = useState<"buy" | "sell" | null>(null);
   const [system, setSystem] = useState<SystemState | null>(null);
@@ -70,18 +71,20 @@ export default function Home() {
   }, [symbol]);
 
   useEffect(() => {
+    if (backendStatus !== "CONNECTED") return;
     queueMicrotask(() => void refresh());
     const timer = window.setInterval(() => void refresh(), 1500);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [backendStatus, refresh]);
   useEffect(() => {
+    if (backendStatus !== "CONNECTED") return;
     queueMicrotask(() => {
       void Promise.all([
         api<{ scenarios: ScenarioInfo[] }>("/api/scenarios"),
         api<RiskSummary>("/api/risk"),
       ]).then(([scenarioData, riskData]) => { setScenarios(scenarioData.scenarios); setRisk(riskData); });
     });
-  }, []);
+  }, [backendStatus]);
   useEffect(() => {
     if (enginePulse) queueMicrotask(() => triggerLogo(enginePulse.type));
   }, [enginePulse, triggerLogo]);
@@ -150,6 +153,7 @@ export default function Home() {
   const statusLabel = connectionError ? "BACKEND UNAVAILABLE" : status === "RESYNCING" ? "RESYNCHRONIZING" : simulation.status;
 
   return <>
+    <EngineConnectionOverlay status={backendStatus} onRetry={retryBackend} />
     <div className="footer-curtain-stage">
       <DotMatrixWordmark pulse={logoPulse} />
     </div>
