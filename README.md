@@ -33,6 +33,17 @@ The Render setup is documented in [docs/render-deployment.md](docs/render-deploy
 development still falls back to `http://localhost:8000`; production builds receive the Render URL
 through `NEXT_PUBLIC_API_URL`.
 
+## Live Demo
+
+[![Limit X Market Lab demo](portfolio-media/screenshots/limitx-market-lab.png)](portfolio-media/recordings/limitx-market-lab-demo.mov)
+
+The recording shows the deterministic simulated market in motion: live order-book depth, market
+depth, trades, analytics, and order entry. The deployed application is available at
+[limitx.dumpydon.workers.dev](https://limitx.dumpydon.workers.dev).
+
+GitHub does not reliably autoplay repository-hosted `.mov` files inline in a README; the poster
+above links directly to the recording for playback or download.
+
 ## How one order moves
 
 ```mermaid
